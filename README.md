@@ -45,6 +45,17 @@ The diagram shows the whole solution on one page. Read it top to bottom:
 
 ---
 
+## 📄 Downloadable Guide
+
+The full guide is also available as a document you can download, print or share offline. It's in the [`docs/`](./docs) folder:
+
+| Format | File | Best for |
+|---|---|---|
+| 📕 PDF | [Azure-GCP-Cross-Cloud-DNS.pdf](./docs/Azure-GCP-Cross-Cloud-DNS.pdf) | Reading and printing (15 pages, with diagrams) |
+| 📘 Word | [Azure-GCP-Cross-Cloud-DNS.docx](./docs/Azure-GCP-Cross-Cloud-DNS.docx) | Editing or reusing in your own documentation |
+
+---
+
 ## Table of Contents
 
 0. [Architecture](#architecture)
