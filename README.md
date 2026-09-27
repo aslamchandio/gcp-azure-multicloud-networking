@@ -24,7 +24,7 @@ It uses **Azure DNS Private Resolver** (inbound subnet `10.10.50.0/28`, outbound
 
 ## Architecture
 
-![Azure ↔ GCP Site-to-Site VPN with BGP & Cross-Cloud Private DNS — High Level Architecture](./Azure-GCP-Architecture.png)
+![Azure ↔ GCP Site-to-Site VPN with BGP & Cross-Cloud Private DNS — High Level Architecture](./images/Azure-GCP-Architecture.png)
 
 The diagram shows the whole solution on one page. Read it top to bottom:
 
@@ -358,7 +358,7 @@ Verify from the bottom up. DNS forwarding rides on the VPN and BGP, so check tho
 
 ### 8.1 VPN tunnels and BGP sessions: console proof
 
-![Azure ↔ GCP HA VPN with BGP — Tunnels Established (console proof)](./VPN-Tunnels-Console-Proof.png)
+![Azure ↔ GCP HA VPN with BGP — Tunnels Established (console proof)](./images/VPN-Tunnels-Console-Proof.png)
 
 The screenshot shows live console output from **both clouds**: 2 IPsec tunnels, with BGP up on both.
 
@@ -423,7 +423,7 @@ az network vpn-connection list -g <RESOURCE_GROUP> --query "[].{name:name, statu
 
 After the tunnels and BGP are up, prove that **both directions work end to end**: each VM resolves the other cloud's private name *and* reaches that private IP over the VPN.
 
-![Cross-Cloud Private DNS — Verified End-to-End](./Cross-Cloud-DNS-Verification.png)
+![Cross-Cloud Private DNS — Verified End-to-End](./images/Cross-Cloud-DNS-Verification.png)
 
 #### Test 1: Azure → GCP (from `public-vm-01`)
 
