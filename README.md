@@ -9,8 +9,32 @@ It uses **Azure DNS Private Resolver** (inbound subnet `10.10.50.0/28`, outbound
 
 ---
 
+## Architecture
+
+![Azure ↔ GCP Site-to-Site VPN with BGP & Cross-Cloud Private DNS — High Level Architecture](./Azure-GCP-Architecture.png)
+
+The diagram shows the whole solution on one page. Read it top to bottom:
+
+| Panel | What it shows |
+|---|---|
+| **1. Microsoft Azure** | VNet `10.10.0.0/16` in `eastus`. **Workload subnets:** public `10.10.1.0/24` (VM `10.10.1.10`) and private `10.10.2.0/24` (VM `10.10.2.10`, no public IP). **DNS Private Resolver** in two delegated `/28` subnets: inbound endpoint `10.10.50.4` and outbound endpoint `10.10.51.4`. Also Azure DNS `168.63.129.16`, the private zone `azurecloud.internal`, the forwarding ruleset (`gcpcloud.internal → GCP`) and the VPN gateway in `GatewaySubnet 10.10.255.0/27`. |
+| **2. VPN + BGP** | An **active-active Azure VPN gateway** connected to **GCP HA VPN** with two IKEv2 IPsec tunnels, both UP. BGP peers run over link-local addresses: Tunnel 0 `169.254.21.1 ↔ 169.254.21.2`, Tunnel 1 `169.254.22.1 ↔ 169.254.22.2`. Azure (ASN `65515`) advertises `10.10.0.0/16`; GCP (ASN `65534`) advertises `10.20.1.0/24`, `10.20.2.0/24` and the **custom route `35.199.192.0/19`**. |
+| **3. Google Cloud** | One global VPC `10.20.0.0/16` with dynamic routing mode **GLOBAL**. **us-west1** (VPN region): subnet `10.20.1.0/24`, VM `10.20.1.100`, forwarder `10.20.1.2`, HA VPN and Cloud Router `gcp-router`. **us-east1** (no VPN): subnet `10.20.2.0/24`, server `10.20.2.200`, forwarder `10.20.2.2`; it reaches Azure through the us-west1 VPN via global routing. Shared services: Cloud DNS `169.254.169.254`, private zone `gcpcloud.internal`, forwarding zone `azurecloud.internal → 10.10.50.4`, inbound DNS policy `allow-inbound-dns`, firewall rule allowing `10.10.0.0/16`, and the Google DNS source range `35.199.192.0/19`. |
+| **4. Azure VM → GCP name** | The 7 steps of `nslookup private.gcpcloud.internal` from Azure: the VM asks Azure DNS → the forwarding rule matches → the query leaves from the outbound endpoint `10.10.51.4` → crosses the VPN → GCP's inbound forwarder `10.20.1.2` answers `10.20.1.100` → the reply returns to the VM. Details in [section 3](#3-azure-vm-looks-up-a-gcp-name). |
+| **5. GCP VM → Azure name** | The 7 steps of `nslookup public.azurecloud.internal` from GCP: the VM asks Cloud DNS → the forwarding zone matches → Google sends the query **from `35.199.192.0/19`** (not the VM IP) → crosses the VPN → Azure's inbound endpoint `10.10.50.4` answers `10.10.1.10` → the reply comes back via the advertised `35.199.192.0/19` route. Details in [section 4](#4-gcp-vm-looks-up-an-azure-name). |
+| **6. Routes BGP must provide** | The four routes DNS forwarding needs in both directions. The red row, **Azure reply → GCP via `35.199.192.0/19`**, is the one most often forgotten. Without it, Azure's DNS answers never get back to GCP. Details in [section 5](#5-what-the-network-layer-must-provide). |
+| **7. Global routing across regions** | Regional vs global dynamic routing mode. Only in **global** mode can `us-east1` reach Azure (path: us-east1 → Google backbone → us-west1 HA VPN → Azure). Enabled with `gcloud compute networks update gcp-vpc --bgp-routing-mode=global`. Details in [section 6](#6-global-routing-across-gcp-regions). |
+| **8. Troubleshooting** | The short checklist: test in halves, check the tunnel and BGP, make sure VMs use their cloud's default DNS, check the ruleset link and targets, read DNS logs, and avoid `.local`. The full guide is in [section 8](#8-troubleshooting). |
+
+**Key features:** HA VPN with 2 IPsec tunnels · BGP dynamic routes · cross-cloud DNS in both directions · multi-region GCP through global routing · private subnet with no public IP · firewall + IPsec security · 7-step troubleshooting guide.
+
+**Legend:** dark blue = Azure components · light blue = Google Cloud components · teal = DNS resolver endpoints.
+
+---
+
 ## Table of Contents
 
+0. [Architecture](#architecture)
 1. [A simple way to think about it](#1-a-simple-way-to-think-about-it)
 2. [What lives where](#2-what-lives-where)
 3. [Azure VM looks up a GCP name](#3-azure-vm-looks-up-a-gcp-name)
@@ -34,7 +58,8 @@ It uses **Azure DNS Private Resolver** (inbound subnet `10.10.50.0/28`, outbound
 | Private zone | `azurecloud.internal` | `gcpcloud.internal` |
 | "Visitor line" (inbound) | Resolver inbound endpoint `10.10.50.4` | Inbound forwarders `10.20.1.2`, `10.20.2.2` |
 | Outbound query source | Resolver outbound endpoint `10.10.51.x` | Google range `35.199.192.0/19` |
-| VPN / BGP | VPN gateway `az-vpngw`, ASN `65515` | HA VPN + Cloud Router `gcp-router`, ASN `65534` |
+| VPN / BGP | VPN gateway `az-vpngw` (active-active), ASN `65515` | HA VPN + Cloud Router `gcp-router`, ASN `65534` |
+| BGP peer IPs | Tunnel 0 `169.254.21.2`, Tunnel 1 `169.254.22.2` | Tunnel 0 `169.254.21.1`, Tunnel 1 `169.254.22.1` |
 | Forwarding config | Ruleset `az-ruleset` → rule `to-gcp-internal` | Forwarding zone `to-azure-internal` |
 | Resource group / project | `rg-s2s` | (your project) |
 
