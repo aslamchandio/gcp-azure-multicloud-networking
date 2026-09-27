@@ -1,11 +1,24 @@
-# Azure ↔ GCP Site-to-Site VPN with BGP and Cross-Cloud Private DNS
+# ☁️ Azure ↔ GCP Site-to-Site VPN with BGP and Cross-Cloud Private DNS
+
+<p>
+  <img src="https://img.shields.io/badge/Microsoft_Azure-0078D4?style=for-the-badge&logo=microsoftazure&logoColor=white" alt="Microsoft Azure">
+  <img src="https://img.shields.io/badge/Google_Cloud-4285F4?style=for-the-badge&logo=googlecloud&logoColor=white" alt="Google Cloud">
+  <img src="https://img.shields.io/badge/HA_VPN-IPsec_IKEv2-6f42c1?style=for-the-badge&logo=wireguard&logoColor=white" alt="HA VPN IPsec">
+  <img src="https://img.shields.io/badge/BGP-Dynamic_Routing-2ea44f?style=for-the-badge&logo=cisco&logoColor=white" alt="BGP">
+  <img src="https://img.shields.io/badge/Private_DNS-Cross--Cloud-00897B?style=for-the-badge&logo=cloudflare&logoColor=white" alt="Private DNS">
+</p>
+
+🌐 **Multi-Cloud** · 🔐 **Private Networking** · 🔁 **BGP Dynamic Routing** · 🧭 **Cross-Cloud DNS** · 🛠️ **Troubleshooting Ready**
 
 This guide explains how an **Azure VNet (`10.10.0.0/16`)** and a **GCP VPC (`10.20.0.0/16`)** are connected with a site-to-site IPsec VPN, how **BGP** automatically shares routes between them, and how virtual machines in each cloud find each other by **private DNS names** instead of IP addresses.
 
 It uses **Azure DNS Private Resolver** (inbound subnet `10.10.50.0/28`, outbound subnet `10.10.51.0/28`) and **GCP Cloud DNS forwarding**, walks through every DNS lookup step by step with diagrams, and ends with a practical troubleshooting guide and all the Azure CLI and `gcloud` commands used.
 
-**Author:** Aslam Chandio
-**LinkedIn:** [linkedin.com/in/aslam-chandio](https://linkedin.com/in/aslam-chandio)
+👤 **Author:** Aslam Chandio<br>
+🔗 **LinkedIn:** [linkedin.com/in/aslam-chandio](https://linkedin.com/in/aslam-chandio)
+
+<a href="https://linkedin.com/in/aslam-chandio"><img src="https://img.shields.io/badge/LinkedIn-Aslam_Chandio-0A66C2?style=for-the-badge&logo=linkedin&logoColor=white" alt="LinkedIn"></a>
+<a href="https://github.com/aslamchandio"><img src="https://img.shields.io/badge/GitHub-aslamchandio-181717?style=for-the-badge&logo=github&logoColor=white" alt="GitHub"></a>
 
 ---
 
@@ -642,4 +655,13 @@ nslookup public.azurecloud.internal
 
 ---
 
-**Author:** Aslam Chandio · [LinkedIn](https://linkedin.com/in/aslam-chandio)
+<div align="center">
+
+👤 **Author:** Aslam Chandio<br>
+🔗 **LinkedIn:** [linkedin.com/in/aslam-chandio](https://linkedin.com/in/aslam-chandio)
+
+<a href="https://linkedin.com/in/aslam-chandio"><img src="https://img.shields.io/badge/Connect_on-LinkedIn-0A66C2?style=for-the-badge&logo=linkedin&logoColor=white" alt="Connect on LinkedIn"></a>
+
+⭐ *If this guide helped you, please star the repo!* ⭐
+
+</div>
