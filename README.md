@@ -31,7 +31,7 @@ The diagram shows the whole solution on one page. Read it top to bottom:
 | Panel | What it shows |
 |---|---|
 | **1. Microsoft Azure** | VNet `10.10.0.0/16` in `eastus`. **Workload subnets:** public `10.10.1.0/24` (VM `10.10.1.10`) and private `10.10.2.0/24` (VM `10.10.2.10`, no public IP). **DNS Private Resolver** in two delegated `/28` subnets: inbound endpoint `10.10.50.4` and outbound endpoint `10.10.51.4`. Also Azure DNS `168.63.129.16`, the private zone `azurecloud.internal`, the forwarding ruleset (`gcpcloud.internal → GCP`) and the VPN gateway in `GatewaySubnet 10.10.255.0/27`. |
-| **2. VPN + BGP** | An **active-active Azure VPN gateway** connected to **GCP HA VPN** with two IKEv2 IPsec tunnels, both UP. BGP peers run over link-local addresses: Tunnel 0 `169.254.21.1 ↔ 169.254.21.2`, Tunnel 1 `169.254.22.1 ↔ 169.254.22.2`. Azure (ASN `65515`) advertises `10.10.0.0/16`; GCP (ASN `65534`) advertises `10.20.1.0/24`, `10.20.2.0/24` and the **custom route `35.199.192.0/19`**. |
+| **2. VPN + BGP** | An **active-active Azure VPN gateway** connected to **GCP HA VPN** with two IKEv2 IPsec tunnels, both UP. BGP peers run over link-local addresses: Tunnel 1 `169.254.21.101 ↔ 169.254.21.102`, Tunnel 2 `169.254.22.101 ↔ 169.254.22.102` (the diagram shortens these to `.1 ↔ .2`; see the console proof in [section 8.1](#81-vpn-tunnels-and-bgp-sessions-console-proof)). Azure (ASN `65515`) advertises `10.10.0.0/16`; GCP (ASN `65534`) advertises `10.20.1.0/24`, `10.20.2.0/24` and the **custom route `35.199.192.0/19`**. |
 | **3. Google Cloud** | One global VPC `10.20.0.0/16` with dynamic routing mode **GLOBAL**. **us-west1** (VPN region): subnet `10.20.1.0/24`, VM `10.20.1.100`, forwarder `10.20.1.2`, HA VPN and Cloud Router `gcp-router`. **us-east1** (no VPN): subnet `10.20.2.0/24`, server `10.20.2.200`, forwarder `10.20.2.2`; it reaches Azure through the us-west1 VPN via global routing. Shared services: Cloud DNS `169.254.169.254`, private zone `gcpcloud.internal`, forwarding zone `azurecloud.internal → 10.10.50.4`, inbound DNS policy `allow-inbound-dns`, firewall rule allowing `10.10.0.0/16`, and the Google DNS source range `35.199.192.0/19`. |
 | **4. Azure VM → GCP name** | The 7 steps of `nslookup private.gcpcloud.internal` from Azure: the VM asks Azure DNS → the forwarding rule matches → the query leaves from the outbound endpoint `10.10.51.4` → crosses the VPN → GCP's inbound forwarder `10.20.1.2` answers `10.20.1.100` → the reply returns to the VM. Details in [section 3](#3-azure-vm-looks-up-a-gcp-name). |
 | **5. GCP VM → Azure name** | The 7 steps of `nslookup public.azurecloud.internal` from GCP: the VM asks Cloud DNS → the forwarding zone matches → Google sends the query **from `35.199.192.0/19`** (not the VM IP) → crosses the VPN → Azure's inbound endpoint `10.10.50.4` answers `10.10.1.10` → the reply comes back via the advertised `35.199.192.0/19` route. Details in [section 4](#4-gcp-vm-looks-up-an-azure-name). |
@@ -55,7 +55,7 @@ The diagram shows the whole solution on one page. Read it top to bottom:
 5. [What the network layer must provide](#5-what-the-network-layer-must-provide)
 6. [Global routing across GCP regions](#6-global-routing-across-gcp-regions)
 7. [Why each VM must use its default DNS](#7-why-each-vm-must-use-its-default-dns)
-8. [Verification: cross-cloud DNS test](#8-verification-cross-cloud-dns-test)
+8. [Verification and testing](#8-verification-and-testing)
 9. [Troubleshooting](#9-troubleshooting)
 10. [Commands](#10-commands)
 11. [Lessons learned](#11-lessons-learned)
@@ -73,7 +73,7 @@ The diagram shows the whole solution on one page. Read it top to bottom:
 | "Visitor line" (inbound) | Resolver inbound endpoint `10.10.50.4` | Inbound forwarders `10.20.1.2`, `10.20.2.2` |
 | Outbound query source | Resolver outbound endpoint `10.10.51.x` | Google range `35.199.192.0/19` |
 | VPN / BGP | VPN gateway `az-vpngw` (active-active), ASN `65515` | HA VPN + Cloud Router `gcp-router`, ASN `65534` |
-| BGP peer IPs | Tunnel 0 `169.254.21.2`, Tunnel 1 `169.254.22.2` | Tunnel 0 `169.254.21.1`, Tunnel 1 `169.254.22.1` |
+| BGP peer IPs | Tunnel 1 `169.254.21.102`, Tunnel 2 `169.254.22.102` | Tunnel 1 `169.254.21.101`, Tunnel 2 `169.254.22.101` |
 | Forwarding config | Ruleset `az-ruleset` → rule `to-gcp-internal` | Forwarding zone `to-azure-internal` |
 | Resource group / project | `rg-s2s` | (your project) |
 
@@ -338,13 +338,83 @@ That is also what happened with the earlier **`.local`** zones. Inside Linux, `s
 
 ---
 
-## 8. Verification: cross-cloud DNS test
+## 8. Verification and testing
 
-After the build, prove that **both directions work end to end**: each VM resolves the other cloud's private name *and* reaches that private IP over the VPN.
+Verify from the bottom up. DNS forwarding rides on the VPN and BGP, so check those first:
+
+1. **8.1 Tunnels and BGP:** both IPsec tunnels are up and both BGP sessions are established.
+2. **8.2 Cross-cloud DNS:** each VM resolves the other cloud's private name *and* reaches that private IP over the VPN.
+
+### 8.1 VPN tunnels and BGP sessions: console proof
+
+![Azure ↔ GCP HA VPN with BGP — Tunnels Established (console proof)](./VPN-Tunnels-Console-Proof.png)
+
+The screenshot shows live console output from **both clouds**: 2 IPsec tunnels, with BGP up on both.
+
+#### Tunnel map
+
+| Tunnel | GCP HA VPN interface (public IP) | BGP link (GCP ↔ Azure) | Azure gateway public IP | Status |
+|---|---|---|---|---|
+| `gcp-azure-tunnel-1` | `34.183.124.225` | `169.254.21.101` ↔ `169.254.21.102` | `74.151.172.1` | ✅ Established · BGP established |
+| `gcp-azure-tunnel-2` | `34.184.24.152` | `169.254.22.101` ↔ `169.254.22.102` | `52.186.107.244` | ✅ Established · BGP established |
+
+- **Two tunnels, two paths.** GCP HA VPN has two interfaces, each with its own public IP. Each connects to a different public IP on the Azure gateway. If one tunnel or gateway instance fails, BGP moves traffic to the other tunnel automatically.
+- **BGP over link-local IPs.** Each tunnel has its own `/30` from `169.254.0.0/16`. The Cloud Router uses `.101` and Azure uses `.102`. These addresses exist only inside the tunnel and never conflict with the VNet or VPC ranges.
+
+#### Google Cloud console: Network Connectivity › VPN › Cloud VPN tunnels
+
+| Field | Value | Meaning |
+|---|---|---|
+| HA VPN gateway | `gcp-vpn-gtw` | GCP end of the tunnels (2 interfaces, 2 public IPs) |
+| Peer VPN gateway | `gcp-azure-peer-gw` | GCP's record of the Azure gateway: its 2 public IPs, `74.151.172.1` and `52.186.107.244` |
+| Tunnels | `gcp-azure-tunnel-1`, `gcp-azure-tunnel-2` | One tunnel per HA VPN interface |
+| Cloud Router BGP IPs | `169.254.21.101`, `169.254.22.101` | GCP-side BGP speakers (ASN `65534`) |
+| Status | **Established** + **BGP established** | IPsec is up and routes are being exchanged |
+
+> [!TIP]
+> "Established" alone only means IPsec is up. You also need **BGP established**. Without BGP no routes are exchanged, so no traffic (and no DNS) crosses the tunnel.
+
+#### Azure portal: Hybrid connectivity › VPN gateways › `az-vpngw-01`
+
+| Field | Value | Meaning |
+|---|---|---|
+| Gateway | `az-vpngw-01` | Azure end of the tunnels (ASN `65515`) |
+| SKU | `VpnGw2AZ` | **Zone-redundant**: gateway instances are spread across availability zones |
+| Gateway type / VPN type | VPN / **Route-based**, BGP enabled | Needed for BGP and for active-active tunnels to GCP HA VPN |
+| Virtual network | `azure-vnet-eus-01` (East US) | The VNet whose address space is advertised to GCP |
+| Public IP | `74.151.172.1` (`az-vpngw-pip1`) | First gateway IP. The second instance uses `52.186.107.244` for tunnel 2 |
+
+#### Verify the same thing from the CLI
+
+```bash
+# GCP: IPsec status of each tunnel (expect: ESTABLISHED)
+gcloud compute vpn-tunnels list --filter="name~gcp-azure-tunnel" \
+  --format="table(name,region,peerIp,status,detailedStatus)"
+
+# GCP: BGP session state and learned routes (expect: status UP, Azure prefixes learned)
+gcloud compute routers get-status <CLOUD_ROUTER_NAME> --region=<REGION> \
+  --format="table(result.bgpPeerStatus[].name,result.bgpPeerStatus[].ipAddress,result.bgpPeerStatus[].peerIpAddress,result.bgpPeerStatus[].status,result.bgpPeerStatus[].numLearnedRoutes)"
+
+# Azure: gateway SKU, type and active-active flag
+az network vnet-gateway show -g <RESOURCE_GROUP> -n az-vpngw-01 \
+  --query "{sku:sku.name, vpnType:vpnType, activeActive:activeActive, bgp:enableBgp}" -o table
+
+# Azure: BGP peers (expect: State = Connected for 169.254.21.101 and 169.254.22.101)
+az network vnet-gateway list-bgp-peer-status -g <RESOURCE_GROUP> -n az-vpngw-01 -o table
+
+# Azure: connection status for each tunnel (expect: Connected)
+az network vpn-connection list -g <RESOURCE_GROUP> --query "[].{name:name, status:connectionStatus}" -o table
+```
+
+✅ **Result:** 2 of 2 tunnels are established and both BGP sessions are up. The network layer is ready for cross-cloud DNS.
+
+### 8.2 Cross-cloud DNS: end-to-end test
+
+After the tunnels and BGP are up, prove that **both directions work end to end**: each VM resolves the other cloud's private name *and* reaches that private IP over the VPN.
 
 ![Cross-Cloud Private DNS — Verified End-to-End](./Cross-Cloud-DNS-Verification.png)
 
-### Test 1: Azure → GCP (from `public-vm-01`)
+#### Test 1: Azure → GCP (from `public-vm-01`)
 
 **Path:** Azure VM → Azure DNS → Private Resolver (outbound endpoint) → VPN → GCP Cloud DNS (inbound forwarder) → `10.20.1.100`
 
@@ -361,7 +431,7 @@ nslookup private.gcpcloud.internal    # show which resolver answered and the ret
 | Reachability | 4 sent, 4 received, **0% packet loss** | The VPN tunnel and the BGP routes to `10.20.1.0/24` work |
 | Latency | **~146 ms avg** | Expected: Azure `eastus` → GCP `us-west1` crosses the US |
 
-### Test 2: GCP → Azure (from `gcp-pub-vm`)
+#### Test 2: GCP → Azure (from `gcp-pub-vm`)
 
 **Path:** GCP VM → Cloud DNS → Forwarding zone → VPN → Azure Resolver (inbound endpoint `10.10.50.4`) → `10.10.2.20`
 
@@ -381,14 +451,14 @@ nslookup private.azurecloud.internal    # show which resolver answered and the r
 > [!NOTE]
 > The **25% packet loss** in Test 2 is one dropped packet out of four, not a fault. A single lost echo at the start or end of a short `ping` run is common (first-packet ARP/flow setup, or `Ctrl+C` stopping before the last reply). For a meaningful loss number, run a longer test: `ping -c 50 private.azurecloud.internal`.
 
-### How to read the results
+#### How to read the results
 
 - **`Server: 127.0.0.53`**: on Ubuntu, `nslookup` talks to the local `systemd-resolved` stub, which forwards to the cloud's built-in DNS. Seeing it here means the lookup took the **normal path** from [section 7](#7-why-each-vm-must-use-its-default-dns), with no hard-coded DNS servers.
 - **`Non-authoritative answer`**: expected. The VM's resolver got the answer from another server (the other cloud's DNS); it doesn't own the zone.
 - **`ttl=63`**: Linux sends pings with TTL 64. One routed hop between the clouds lowers it to 63, which shows the traffic goes straight through the VPN gateways.
 - **Private IPs only**: every address in both tests is RFC 1918 (`10.x`). Nothing goes over the public internet.
 
-### Verification checklist
+#### Verification checklist
 
 | # | Check | Command | Expected |
 |---|---|---|---|
