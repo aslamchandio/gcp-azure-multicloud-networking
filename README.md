@@ -37,7 +37,7 @@ The diagram shows the whole solution on one page. Read it top to bottom:
 | **5. GCP VM → Azure name** | The 7 steps of `nslookup public.azurecloud.internal` from GCP: the VM asks Cloud DNS → the forwarding zone matches → Google sends the query **from `35.199.192.0/19`** (not the VM IP) → crosses the VPN → Azure's inbound endpoint `10.10.50.4` answers `10.10.1.10` → the reply comes back via the advertised `35.199.192.0/19` route. Details in [section 4](#4-gcp-vm-looks-up-an-azure-name). |
 | **6. Routes BGP must provide** | The four routes DNS forwarding needs in both directions. The red row, **Azure reply → GCP via `35.199.192.0/19`**, is the one most often forgotten. Without it, Azure's DNS answers never get back to GCP. Details in [section 5](#5-what-the-network-layer-must-provide). |
 | **7. Global routing across regions** | Regional vs global dynamic routing mode. Only in **global** mode can `us-east1` reach Azure (path: us-east1 → Google backbone → us-west1 HA VPN → Azure). Enabled with `gcloud compute networks update gcp-vpc --bgp-routing-mode=global`. Details in [section 6](#6-global-routing-across-gcp-regions). |
-| **8. Troubleshooting** | The short checklist: test in halves, check the tunnel and BGP, make sure VMs use their cloud's default DNS, check the ruleset link and targets, read DNS logs, and avoid `.local`. The full guide is in [section 8](#8-troubleshooting). |
+| **8. Troubleshooting** | The short checklist: test in halves, check the tunnel and BGP, make sure VMs use their cloud's default DNS, check the ruleset link and targets, read DNS logs, and avoid `.local`. The full guide is in [section 9](#9-troubleshooting). |
 
 **Key features:** HA VPN with 2 IPsec tunnels · BGP dynamic routes · cross-cloud DNS in both directions · multi-region GCP through global routing · private subnet with no public IP · firewall + IPsec security · 7-step troubleshooting guide.
 
@@ -55,9 +55,10 @@ The diagram shows the whole solution on one page. Read it top to bottom:
 5. [What the network layer must provide](#5-what-the-network-layer-must-provide)
 6. [Global routing across GCP regions](#6-global-routing-across-gcp-regions)
 7. [Why each VM must use its default DNS](#7-why-each-vm-must-use-its-default-dns)
-8. [Troubleshooting](#8-troubleshooting)
-9. [Commands](#9-commands)
-10. [Lessons learned](#10-lessons-learned)
+8. [Verification: cross-cloud DNS test](#8-verification-cross-cloud-dns-test)
+9. [Troubleshooting](#9-troubleshooting)
+10. [Commands](#10-commands)
+11. [Lessons learned](#11-lessons-learned)
 
 ---
 
@@ -337,7 +338,74 @@ That is also what happened with the earlier **`.local`** zones. Inside Linux, `s
 
 ---
 
-## 8. Troubleshooting
+## 8. Verification: cross-cloud DNS test
+
+After the build, prove that **both directions work end to end**: each VM resolves the other cloud's private name *and* reaches that private IP over the VPN.
+
+![Cross-Cloud Private DNS — Verified End-to-End](./Cross-Cloud-DNS-Verification.png)
+
+### Test 1: Azure → GCP (from `public-vm-01`)
+
+**Path:** Azure VM → Azure DNS → Private Resolver (outbound endpoint) → VPN → GCP Cloud DNS (inbound forwarder) → `10.20.1.100`
+
+```bash
+# From the Azure VM (public-vm-01)
+ping private.gcpcloud.internal        # resolve the GCP name and reach it over the VPN
+nslookup private.gcpcloud.internal    # show which resolver answered and the returned IP
+```
+
+| Check | Result | What it proves |
+|---|---|---|
+| Name resolution | `private.gcpcloud.internal → 10.20.1.100` | The Azure ruleset forwards `gcpcloud.internal` to GCP, and Cloud DNS answers |
+| Resolver used | `Server: 127.0.0.53` | The VM uses its normal local resolver (`systemd-resolved` → `168.63.129.16`), with no workarounds |
+| Reachability | 4 sent, 4 received, **0% packet loss** | The VPN tunnel and the BGP routes to `10.20.1.0/24` work |
+| Latency | **~146 ms avg** | Expected: Azure `eastus` → GCP `us-west1` crosses the US |
+
+### Test 2: GCP → Azure (from `gcp-pub-vm`)
+
+**Path:** GCP VM → Cloud DNS → Forwarding zone → VPN → Azure Resolver (inbound endpoint `10.10.50.4`) → `10.10.2.20`
+
+```bash
+# From the GCP VM (gcp-pub-vm)
+ping private.azurecloud.internal        # resolve the Azure name and reach it over the VPN
+nslookup private.azurecloud.internal    # show which resolver answered and the returned IP
+```
+
+| Check | Result | What it proves |
+|---|---|---|
+| Name resolution | `private.azurecloud.internal → 10.10.2.20` | The GCP forwarding zone reaches Azure's inbound endpoint, and the reply comes back via `35.199.192.0/19` |
+| Resolver used | `Server: 127.0.0.53` | The VM uses its normal local resolver (→ `169.254.169.254`) |
+| Reachability | 4 sent, 3 received | The VPN and BGP routes to Azure's **private subnet** `10.10.2.0/24` work |
+| Latency | **~72 ms avg** | Stable round-trip time over the tunnel (the two tests run between different VM pairs, so their latencies aren't directly comparable) |
+
+> [!NOTE]
+> The **25% packet loss** in Test 2 is one dropped packet out of four, not a fault. A single lost echo at the start or end of a short `ping` run is common (first-packet ARP/flow setup, or `Ctrl+C` stopping before the last reply). For a meaningful loss number, run a longer test: `ping -c 50 private.azurecloud.internal`.
+
+### How to read the results
+
+- **`Server: 127.0.0.53`**: on Ubuntu, `nslookup` talks to the local `systemd-resolved` stub, which forwards to the cloud's built-in DNS. Seeing it here means the lookup took the **normal path** from [section 7](#7-why-each-vm-must-use-its-default-dns), with no hard-coded DNS servers.
+- **`Non-authoritative answer`**: expected. The VM's resolver got the answer from another server (the other cloud's DNS); it doesn't own the zone.
+- **`ttl=63`**: Linux sends pings with TTL 64. One routed hop between the clouds lowers it to 63, which shows the traffic goes straight through the VPN gateways.
+- **Private IPs only**: every address in both tests is RFC 1918 (`10.x`). Nothing goes over the public internet.
+
+### Verification checklist
+
+| # | Check | Command | Expected |
+|---|---|---|---|
+| 1 | Tunnels up | `gcloud compute vpn-tunnels describe tunnel-0 --region=us-west1 --format="value(status)"` | `ESTABLISHED` |
+| 2 | BGP learned routes (GCP) | `gcloud compute routers get-status gcp-router --region=us-west1` | Peers UP, `10.10.0.0/16` learned |
+| 3 | BGP learned routes (Azure) | `az network vnet-gateway list-learned-routes -g rg-s2s -n az-vpngw -o table` | `10.20.1.0/24`, `10.20.2.0/24`, `35.199.192.0/19` |
+| 4 | Azure → GCP DNS | `nslookup private.gcpcloud.internal` (Azure VM) | `10.20.1.100` |
+| 5 | GCP → Azure DNS | `nslookup private.azurecloud.internal` (GCP VM) | `10.10.2.20` |
+| 6 | Data path both ways | `ping` from each side | Replies with `ttl=63` |
+
+✅ **Both directions work.** Each VM asks its own local resolver (`127.0.0.53`), gets the other cloud's **private IP** by name, and reaches it over the **VPN tunnel**. The `.internal` zones resolve with no VM-side workarounds.
+
+If any check fails, go to [section 9: Troubleshooting](#9-troubleshooting).
+
+---
+
+## 9. Troubleshooting
 
 ```mermaid
 flowchart TD
@@ -507,7 +575,7 @@ sudo resolvectl domain eth0 '~local'
 
 ---
 
-## 9. Commands
+## 10. Commands
 
 ### Azure: resolver subnets and endpoints
 
@@ -644,7 +712,7 @@ nslookup public.azurecloud.internal
 
 ---
 
-## 10. Lessons learned
+## 11. Lessons learned
 
 - **Each VM must use its cloud's built-in DNS** (`168.63.129.16` on Azure, `169.254.169.254` on GCP). If a VM uses any other DNS server, it never reaches the ruleset or forwarding zone, so cross-cloud names fail.
 - **Avoid `.local` for private zones.** On Linux, `systemd-resolved` (`127.0.0.53`) reserves `.local` for multicast DNS and never forwards those names to Azure DNS, which causes `SERVFAIL`. Use **`.internal`**, which is officially reserved for private networks.
